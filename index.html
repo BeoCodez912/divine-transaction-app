@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Divine Transaction Manifestation</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.7.0/dist/ethers.umd.min.js"></script>
+  <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
+  <style>
+    body { 
+      font-family:'Segoe UI',sans-serif; 
+      background:linear-gradient(135deg,#0f0c29,#302b63,#24243e); 
+      color:#fff; 
+      margin:0; 
+      padding:20px; 
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    .container { 
+      max-width:960px; 
+      margin:auto; 
+      background:rgba(0,0,0,.45); 
+      padding:2rem; 
+      border-radius:16px; 
+      border:1px solid gold; 
+      box-shadow:0 0 15px rgba(255,215,0,.5); 
+    }
+    h1 { text-align:center; color:gold; margin:0 0 8px; }
+    .subtitle { text-align:center; color:#ccc; margin:0 0 22px; }
+    .input-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+    input, select { padding:10px; border-radius:8px; border:none; flex:1 1 220px; }
+    button { background:gold; color:#0f0c29; padding:10px 16px; border:none; border-radius:8px; cursor:pointer; font-weight:700; }
+    button:hover { filter:brightness(1.06); }
+    #tonConnectButton { margin:0 0 14px; display:flex; justify-content:center; }
+    .scripture,.log { background:rgba(255,255,255,.08); padding:1rem; border-radius:10px; margin-top:16px; }
+    #logArea { 
+      position: fixed; 
+      bottom: 20px; 
+      left: 50%; 
+      transform: translateX(-50%); 
+      background: rgba(255,215,0,.97); 
+      color: #0f0c29; 
+      padding: 10px 20px; 
+      border-radius: 30px; 
+      font-size: 14px; 
+      z-index: 9999; 
+      max-width: 92%; 
+      display: none;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Divine Transaction Manifestation</h1>
+    <p class="subtitle">Divide your last on-chain transfer and bless multiple recipients across ETH, Polygon, or TON.</p>
+
+    <div id="tonConnectButton"></div>
+
+    <div class="input-row">
+      <input id="amountInput" placeholder="Divisor (e.g. 2 to divide last tx by 2)"/>
+      <input id="toInput" placeholder="Recipients (comma-separated addresses)"/>
+      <select id="chainSelect">
+        <option value="ethereum">Ethereum</option>
+        <option value="polygon">Polygon</option>
+        <option value="ton">TON</option>
+      </select>
+    </div>
+
+    <div class="input-row">
+      <button onclick="connectWallet()">Connect</button>
+      <button onclick="disconnectWallet()">Disconnect</button>
+      <button onclick="fetchLastTxValue()">Fetch Last Tx</button>
+      <button onclick="sendBlessings()">Send Blessings</button>
+    </div>
+
+    <div class="scripture">
+      <p><strong>Matthew 5:11-12</strong> — Blessed are ye, when men shall revile you… rejoice, and be exceeding glad.</p>
+      <p><strong>John 1:1-5</strong> — In the beginning was the Word, and the Word was with God, and the Word was God…</p>
+    </div>
+
+    <div class="log" id="localLog"></div>
+  </div>
+
+  <div id="logArea"></div>
+
+<script>
+const ETHERSCAN_KEY = "45VXYV1XBVNXVYGAIQUHAC44CI81MHGCCY";
+const POLYGONSCAN_KEY = "HIWV1J27U6UYNXGKK4789QKKXGIPJFG11J";
+const TON_API_KEY = "a3f13230cd252592aa9e228bb7446f4a2195320fbb31fef5111f9382f78fd55c";
+
+let provider, signer, userAddress = null;
+let lastTxValueWei = 0n;
+let tonUI = null;
+
+function showPopup(msg) {
+  const el = document.getElementById("logArea");
+  el.textContent = msg;
+  el.style.display = "block";
+  setTimeout(() => el.style.display = "none", 7000);
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+window.addEventListener("DOMContentLoaded", async () => {
+  tonUI = new TON_CONNECT_UI.TonConnectUI({
+    manifestUrl: window.location.origin + '/tonconnect-manifest.json',
+    buttonRootId: "tonConnectButton"
+  });
+
+  try { await tonUI.restoreConnection(); } catch(e) {}
+  tonUI.onStatusChange((wallet) => {
+    if (wallet && wallet.account?.address) {
+      userAddress = wallet.account.address;
+      showPopup("TON connected: " + userAddress);
+    } else {
+      if (document.getElementById("chainSelect").value === "ton") userAddress = null;
+    }
+  });
+});
+
+async function connectWallet() {
+  const chain = document.getElementById("chainSelect").value;
+
+  if (chain === "ton") {
+    if (!tonUI) return showPopup("TON Connect UI not ready yet.");
+    await tonUI.connectWallet();
+    return;
+  }
+
+  if (!window.ethereum) return showPopup("MetaMask not found.");
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = await provider.getSigner();
+  userAddress = await signer.getAddress();
+  showPopup("Connected: " + userAddress);
+}
+
+function disconnectWallet() {
+  provider = null;
+  signer = null;
+  userAddress = null;
+  showPopup("Disconnected.");
+}
+
+async function fetchLastTxValue() {
+  if (!userAddress) return showPopup("Connect wallet first.");
+  const chain = document.getElementById("chainSelect").value;
+
+  if (chain === "ton") {
+    try {
+      const url = `https://tonapi.io/v2/blockchain/accounts/${userAddress}/transactions?limit=1`;
+      const res = await fetch(url, { headers: { "Authorization": "Bearer " + TON_API_KEY } });
+      const json = await res.json();
+      const tx = Array.isArray(json?.transactions) ? json.transactions[0] : null;
+      if (!tx) return showPopup("No TON transactions found.");
+
+      let outSum = 0n;
+      if (Array.isArray(tx.out_msgs)) {
+        for (const m of tx.out_msgs) outSum += BigInt(m.value || 0);
+      }
+      const inVal = BigInt(tx?.in_msg?.value || 0);
+      lastTxValueWei = outSum > 0n ? outSum : inVal;
+
+      if (lastTxValueWei === 0n) {
+        showPopup("TON last tx was 0.");
+      } else {
+        showPopup(`TON last tx: ${Number(lastTxValueWei)/1e9} TON`);
+      }
+    } catch (e) {
+      console.error(e);
+      showPopup("Failed to fetch TON tx.");
+    }
+    return;
+  }
+
+  try {
+    const network = chain === "polygon" ? "matic" : "homestead";
+    const scanKey = chain === "polygon" ? POLYGONSCAN_KEY : ETHERSCAN_KEY;
+    const scan = new ethers.EtherscanProvider(network, scanKey);
+
+    const history = await scan.getHistory(userAddress);
+    const tx = [...history].reverse().find(t => t.from.toLowerCase() === userAddress.toLowerCase() && t.value > 0n);
+    if (tx) {
+      lastTxValueWei = tx.value;
+      showPopup(`Last tx: ${ethers.formatEther(lastTxValueWei)} ${chain === "polygon" ? "MATIC" : "ETH"}`);
+    } else {
+      showPopup("No non-zero transactions found.");
+    }
+  } catch (e) {
+    console.error(e);
+    showPopup("Failed to fetch EVM tx.");
+  }
+}
+
+async function sendBlessings() {
+  if (!lastTxValueWei) return showPopup("Fetch last transaction first.");
+  const divisorStr = document.getElementById("amountInput").value.trim();
+  const recipients = document.getElementById("toInput").value.split(",").map(s => s.trim()).filter(Boolean);
+
+  if (!divisorStr || isNaN(divisorStr) || BigInt(divisorStr) <= 0n) return showPopup("Invalid divisor.");
+  if (recipients.length === 0) return showPopup("No recipients provided.");
+
+  const divided = lastTxValueWei / BigInt(divisorStr);
+  const valuePer = divided / BigInt(recipients.length);
+
+  const chain = document.getElementById("chainSelect").value;
+  if (chain === "ton") {
+    for (const to of recipients) {
+      try {
+        const result = await tonUI.sendTransaction({ messages: [{ address: to, amount: valuePer.toString() }] });
+        showPopup(`Sent ${Number(valuePer)/1e9} TON to ${to}`);
+        await sleep(400);
+      } catch (e) {
+        console.error(e);
+        showPopup(`Failed to send TON to ${to}`);
+      }
+    }
+    return;
+  }
+
+  for (const to of recipients) {
+    try {
+      const tx = await signer.sendTransaction({ to, value: valuePer });
+      await tx.wait();
+      showPopup(`Blessed ${to} with ${ethers.formatEther(valuePer)} ${chain === "polygon" ? "MATIC" : "ETH"}`);
+      await sleep(400);
+    } catch (e) {
+      console.error(e);
+      showPopup(`Failed to send to ${to}`);
+    }
+  }
+}
+</script>
+</body>
+</html>

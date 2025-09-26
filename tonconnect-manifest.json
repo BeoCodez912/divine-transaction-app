@@ -1,8 +1,7 @@
 {
   "url": "https://github.com/BeoCodez912/divine-transaction-app",
   "name": "Divine Transaction Manifestation",
-  "iconUrl": "https://github.com/BeoCodez912//divine-transaction-app/icon.png",
-  "termsOfUseUrl": "https://github.com/BeoCodez912//divine-transaction-app/terms.html",
+  "iconUrl": "https://raw.githubusercontent.com/BeoCodez912/divine-transaction-app/main/icon.png",
+  "termsOfUseUrl": "https://github.com/BeoCodez912/divine-transaction-app/terms.html",
   "privacyPolicyUrl": "https://github.com/BeoCodez912/divine-transaction-app/privacy.html"
-
 }

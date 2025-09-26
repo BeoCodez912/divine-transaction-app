@@ -29,8 +29,9 @@
     .subtitle { text-align:center; color:#ccc; margin:0 0 22px; }
     .input-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
     input, select { padding:10px; border-radius:8px; border:none; flex:1 1 220px; }
-    button { background:gold; color:#0f0c29; padding:10px 16px; border:none; border-radius:8px; cursor:pointer; font-weight:700; }
+    button { background:gold; color:#0f0c29; padding:10px 16px; border:none; border-radius:8px; cursor:pointer; font-weight:700; margin:2px; }
     button:hover { filter:brightness(1.06); }
+    button:disabled { background:#666; cursor:not-allowed; }
     #tonConnectButton { margin:0 0 14px; display:flex; justify-content:center; }
     .scripture,.log { background:rgba(255,255,255,.08); padding:1rem; border-radius:10px; margin-top:16px; }
     #logArea { 
@@ -48,9 +49,7 @@
       display: none;
       text-align: center;
     }
-    .loading { color: gold; }
-    .error { color: #ff6b6b; }
-    .success { color: #51cf66; }
+    .debug { font-size: 12px; color: #ccc; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -61,7 +60,7 @@
     <div id="tonConnectButton"></div>
 
     <div class="input-row">
-      <input id="amountInput" placeholder="Divisor (e.g. 2 to divide last tx by 2)"/>
+      <input id="amountInput" placeholder="Divisor (e.g., 2 to divide last tx by 2)"/>
       <input id="toInput" placeholder="Recipients (comma-separated addresses)"/>
       <select id="chainSelect">
         <option value="ethereum">Ethereum</option>
@@ -71,10 +70,11 @@
     </div>
 
     <div class="input-row">
-      <button onclick="connectWallet()">Connect</button>
+      <button onclick="connectWallet()" id="connectBtn">Connect</button>
       <button onclick="disconnectWallet()">Disconnect</button>
-      <button onclick="fetchLastTxValue()">Fetch Last Tx</button>
-      <button onclick="sendBlessings()">Send Blessings</button>
+      <button onclick="fetchLastTxValue()" id="fetchBtn">Fetch Last Tx</button>
+      <button onclick="sendBlessings()" id="sendBtn">Send Blessings</button>
+      <button onclick="debugConnection()" style="background:#666;">Debug</button>
     </div>
 
     <div class="scripture">
@@ -82,101 +82,136 @@
       <p><strong>John 1:1-5</strong> — In the beginning was the Word, and the Word was with God, and the Word was God…</p>
     </div>
 
-    <div class="log" id="localLog"></div>
+    <div class="log" id="localLog">
+      <div>Log will appear here...</div>
+    </div>
+    
+    <div class="debug" id="debugInfo"></div>
   </div>
 
   <div id="logArea"></div>
 
 <script>
-// Free API keys that should work
-const ETHERSCAN_KEY = "YourApiKeyToken"; // Free tier - no key needed for basic usage
-const POLYGONSCAN_KEY = "YourApiKeyToken"; // Free tier - no key needed for basic usage
+// Configuration
+const ETHERSCAN_KEY = "YourApiKeyToken";
+const POLYGONSCAN_KEY = "YourApiKeyToken";
 
-let provider, signer, userAddress = null;
+let provider = null;
+let signer = null;
+let userAddress = null;
 let lastTxValueWei = 0n;
 let tonUI = null;
+
+// DOM elements
+let connectBtn, fetchBtn, sendBtn, chainSelect, debugInfo;
 
 function showPopup(msg, type = "info") {
   const el = document.getElementById("logArea");
   el.textContent = msg;
   el.style.display = "block";
   
-  // Remove previous classes
-  el.classList.remove("loading", "error", "success");
+  // Add type-based styling
+  el.style.background = type === "error" ? "rgba(255,107,107,0.97)" : 
+                         type === "success" ? "rgba(81,207,102,0.97)" : 
+                         type === "loading" ? "rgba(255,215,0,0.97)" : "rgba(255,215,0,0.97)";
   
-  // Add appropriate class
-  if (type === "error") el.classList.add("error");
-  else if (type === "success") el.classList.add("success");
-  else if (type === "loading") el.classList.add("loading");
-  
-  setTimeout(() => {
-    el.style.display = "none";
-    el.classList.remove("loading", "error", "success");
-  }, 7000);
-  
-  // Also log to local log area
+  setTimeout(() => el.style.display = "none", 5000);
   logToScreen(msg, type);
 }
 
 function logToScreen(msg, type = "info") {
   const logArea = document.getElementById("localLog");
   const timestamp = new Date().toLocaleTimeString();
-  const color = type === "error" ? "#ff6b6b" : type === "success" ? "#51cf66" : "#ffd700";
+  const color = type === "error" ? "#ff6b6b" : 
+                type === "success" ? "#51cf66" : 
+                type === "loading" ? "#ffd700" : "#ffffff";
+  
+  if (logArea.innerHTML.includes("Log will appear here...")) {
+    logArea.innerHTML = '';
+  }
+  
   logArea.innerHTML += `<div style="color:${color}; margin:5px 0; font-size:14px;">[${timestamp}] ${msg}</div>`;
   logArea.scrollTop = logArea.scrollHeight;
 }
 
+function updateButtonStates() {
+  const isConnected = !!userAddress;
+  const hasLastTx = lastTxValueWei > 0n;
+  
+  if (connectBtn) connectBtn.textContent = isConnected ? "Connected" : "Connect";
+  if (fetchBtn) fetchBtn.disabled = !isConnected;
+  if (sendBtn) sendBtn.disabled = !(isConnected && hasLastTx);
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Initialize TON Connect with proper error handling
+// Initialize when DOM is loaded
 window.addEventListener("DOMContentLoaded", async () => {
+  // Get DOM elements
+  connectBtn = document.getElementById("connectBtn");
+  fetchBtn = document.getElementById("fetchBtn");
+  sendBtn = document.getElementById("sendBtn");
+  chainSelect = document.getElementById("chainSelect");
+  debugInfo = document.getElementById("debugInfo");
+  
   try {
+    // Initialize TON Connect
+    const manifestUrl = new URL('tonconnect-manifest.json', window.location.href).href;
+    
     tonUI = new TON_CONNECT_UI.TonConnectUI({
-      manifestUrl: window.location.href.replace(/\/$/, '') + '/tonconnect-manifest.json',
+      manifestUrl: manifestUrl,
       buttonRootId: "tonConnectButton"
     });
 
-    // Try to restore connection
+    // Restore any existing connection
     await tonUI.restoreConnection();
     
+    // Handle wallet status changes
     tonUI.onStatusChange((wallet) => {
       if (wallet && wallet.account?.address) {
         userAddress = wallet.account.address;
-        showPopup("TON wallet connected successfully!", "success");
-        logToScreen(`TON Connected: ${userAddress}`, "success");
+        showPopup("✓ TON wallet connected", "success");
+        logToScreen(`TON wallet connected: ${userAddress}`, "success");
       } else {
         userAddress = null;
         logToScreen("TON wallet disconnected", "info");
       }
+      updateButtonStates();
     });
     
     logToScreen("TON Connect initialized successfully", "success");
+    debugInfo.innerHTML = `TON Connect: Ready | URL: ${manifestUrl}`;
+    
   } catch (error) {
     console.error("TON Connect initialization error:", error);
-    logToScreen("TON Connect initialization failed: " + error.message, "error");
+    logToScreen(`TON Connect init failed: ${error.message}`, "error");
+    debugInfo.innerHTML = `TON Connect: Failed - ${error.message}`;
   }
+  
+  updateButtonStates();
 });
 
 async function connectWallet() {
-  const chain = document.getElementById("chainSelect").value;
+  const chain = chainSelect.value;
+  logToScreen(`Connecting to ${chain}...`, "loading");
 
   if (chain === "ton") {
     if (!tonUI) {
-      showPopup("TON Connect UI not ready. Please refresh the page.", "error");
+      showPopup("TON Connect not initialized", "error");
       return;
     }
     try {
       await tonUI.connectWallet();
-      showPopup("Connecting to TON wallet...", "loading");
+      showPopup("Opening TON wallet...", "loading");
     } catch (error) {
-      showPopup("TON connection failed: " + error.message, "error");
+      showPopup(`TON connection failed: ${error.message}`, "error");
     }
     return;
   }
 
-  // EVM chains (Ethereum/Polygon)
+  // EVM chains
   if (!window.ethereum) {
-    showPopup("MetaMask not found. Please install MetaMask.", "error");
+    showPopup("Please install MetaMask", "error");
     return;
   }
 
@@ -187,7 +222,7 @@ async function connectWallet() {
     signer = await provider.getSigner();
     userAddress = await signer.getAddress();
     
-    // Get chain ID to verify correct network
+    // Verify network
     const network = await provider.getNetwork();
     const expectedChainId = chain === "polygon" ? 137n : 1n;
     
@@ -197,15 +232,19 @@ async function connectWallet() {
       return;
     }
     
-    showPopup(`Connected to ${chain}: ${userAddress.slice(0, 8)}...`, "success");
+    showPopup(`✓ Connected to ${chain}`, "success");
     logToScreen(`Connected to ${chain}: ${userAddress}`, "success");
+    
   } catch (error) {
-    showPopup("Connection failed: " + error.message, "error");
+    showPopup(`Connection failed: ${error.message}`, "error");
+    logToScreen(`Connection error: ${error.message}`, "error");
   }
+  
+  updateButtonStates();
 }
 
 function disconnectWallet() {
-  const chain = document.getElementById("chainSelect").value;
+  const chain = chainSelect.value;
   
   if (chain === "ton" && tonUI) {
     tonUI.disconnect();
@@ -214,48 +253,45 @@ function disconnectWallet() {
   provider = null;
   signer = null;
   userAddress = null;
-  showPopup("Disconnected from wallet", "info");
+  lastTxValueWei = 0n;
+  
+  showPopup("Disconnected", "info");
+  logToScreen("Wallet disconnected", "info");
+  updateButtonStates();
 }
 
 async function fetchLastTxValue() {
   if (!userAddress) {
-    showPopup("Please connect your wallet first", "error");
+    showPopup("Please connect wallet first", "error");
     return;
   }
 
-  const chain = document.getElementById("chainSelect").value;
-  showPopup(`Fetching last transaction on ${chain}...`, "loading");
+  const chain = chainSelect.value;
+  showPopup(`Fetching last ${chain} transaction...`, "loading");
 
   if (chain === "ton") {
     try {
-      // Using public TON API without key
       const url = `https://tonapi.io/v2/blockchain/accounts/${userAddress}/transactions?limit=10`;
       const res = await fetch(url);
       
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      if (!res.ok) throw new Error(`TON API error: ${res.status}`);
       
       const json = await res.json();
       const transactions = Array.isArray(json?.transactions) ? json.transactions : [];
       
-      // Find the most recent outgoing transaction
-      let lastTx = null;
-      for (const tx of transactions) {
-        if (Array.isArray(tx.out_msgs) && tx.out_msgs.length > 0) {
-          lastTx = tx;
-          break;
-        }
-        if (tx.in_msg && tx.in_msg.source && tx.in_msg.source !== userAddress) {
-          lastTx = tx;
-          break;
-        }
-      }
+      // Find most recent transaction with value
+      const lastTx = transactions.find(tx => {
+        const hasOutgoing = Array.isArray(tx.out_msgs) && tx.out_msgs.some(msg => msg.value > 0);
+        const hasIncoming = tx.in_msg && tx.in_msg.value > 0;
+        return hasOutgoing || hasIncoming;
+      });
       
       if (!lastTx) {
-        showPopup("No recent transactions found", "error");
+        showPopup("No transactions with value found", "error");
         return;
       }
 
-      // Calculate value
+      // Calculate total value
       let txValue = 0n;
       if (Array.isArray(lastTx.out_msgs)) {
         for (const msg of lastTx.out_msgs) {
@@ -269,30 +305,27 @@ async function fetchLastTxValue() {
       lastTxValueWei = txValue;
 
       if (lastTxValueWei === 0n) {
-        showPopup("Last transaction value is 0", "error");
+        showPopup("Transaction value is 0", "error");
       } else {
         const tonAmount = Number(lastTxValueWei) / 1e9;
-        showPopup(`Last TON transaction: ${tonAmount.toFixed(4)} TON`, "success");
-        logToScreen(`Fetched TON tx: ${tonAmount.toFixed(4)} TON`, "success");
+        showPopup(`✓ Last TON tx: ${tonAmount.toFixed(6)} TON`, "success");
+        logToScreen(`Fetched TON transaction: ${tonAmount.toFixed(6)} TON`, "success");
       }
     } catch (error) {
-      console.error("TON fetch error:", error);
-      showPopup("Failed to fetch TON transactions: " + error.message, "error");
+      showPopup(`TON fetch failed: ${error.message}`, "error");
+      logToScreen(`TON fetch error: ${error.message}`, "error");
     }
+    updateButtonStates();
     return;
   }
 
   // EVM chains
   try {
-    const network = chain === "polygon" ? "matic" : "homestead";
+    const rpcUrl = chain === "polygon" 
+      ? "https://polygon-rpc.com" 
+      : "https://eth.llamarpc.com";
     
-    // Use ethers provider without API key for basic functionality
-    const provider = new ethers.JsonRpcProvider(
-      chain === "polygon" 
-        ? "https://polygon-rpc.com" 
-        : "https://eth.llamarpc.com"
-    );
-
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
     const history = await provider.getHistory(userAddress);
     
     // Find most recent outgoing transaction with value
@@ -304,20 +337,22 @@ async function fetchLastTxValue() {
       lastTxValueWei = tx.value;
       const amount = ethers.formatEther(lastTxValueWei);
       const symbol = chain === "polygon" ? "MATIC" : "ETH";
-      showPopup(`Last transaction: ${amount} ${symbol}`, "success");
-      logToScreen(`Fetched ${chain} tx: ${amount} ${symbol}`, "success");
+      showPopup(`✓ Last tx: ${amount} ${symbol}`, "success");
+      logToScreen(`Fetched ${chain} transaction: ${amount} ${symbol}`, "success");
     } else {
-      showPopup("No outgoing transactions with value found", "error");
+      showPopup("No outgoing transactions found", "error");
     }
   } catch (error) {
-    console.error("EVM fetch error:", error);
-    showPopup("Failed to fetch transactions: " + error.message, "error");
+    showPopup(`Transaction fetch failed: ${error.message}`, "error");
+    logToScreen(`EVM fetch error: ${error.message}`, "error");
   }
+  
+  updateButtonStates();
 }
 
 async function sendBlessings() {
   if (!lastTxValueWei || lastTxValueWei === 0n) {
-    showPopup("Please fetch a valid transaction first", "error");
+    showPopup("Fetch a transaction first", "error");
     return;
   }
 
@@ -325,12 +360,12 @@ async function sendBlessings() {
   const recipients = document.getElementById("toInput").value.split(",").map(s => s.trim()).filter(Boolean);
 
   if (!divisorStr || isNaN(divisorStr) || BigInt(divisorStr) <= 0n) {
-    showPopup("Please enter a valid divisor number", "error");
+    showPopup("Enter a valid divisor", "error");
     return;
   }
   
   if (recipients.length === 0) {
-    showPopup("Please enter at least one recipient address", "error");
+    showPopup("Enter recipient addresses", "error");
     return;
   }
 
@@ -343,33 +378,27 @@ async function sendBlessings() {
     return;
   }
 
-  const chain = document.getElementById("chainSelect").value;
-  showPopup(`Sending blessings to ${recipients.length} recipients...`, "loading");
+  const chain = chainSelect.value;
+  showPopup(`Sending to ${recipients.length} recipients...`, "loading");
 
   if (chain === "ton") {
-    for (const to of recipients) {
+    for (const [index, to] of recipients.entries()) {
       try {
-        // Validate TON address format
         if (!to.match(/^[EU][Q\d][A-HJ-NP-Za-km-z1-9]{48}$/)) {
           showPopup(`Invalid TON address: ${to}`, "error");
           continue;
         }
 
         const result = await tonUI.sendTransaction({
-          messages: [
-            {
-              address: to,
-              amount: valuePer.toString()
-            }
-          ]
+          messages: [{ address: to, amount: valuePer.toString() }]
         });
         
         const tonAmount = Number(valuePer) / 1e9;
-        showPopup(`Sent ${tonAmount.toFixed(6)} TON to ${to.slice(0, 8)}...`, "success");
+        showPopup(`✓ Sent ${tonAmount.toFixed(6)} TON (${index + 1}/${recipients.length})`, "success");
         logToScreen(`Sent to ${to}: ${tonAmount.toFixed(6)} TON`, "success");
-        await sleep(2000); // Wait between transactions
+        await sleep(2000);
       } catch (error) {
-        showPopup(`Failed to send to ${to.slice(0, 8)}...: ${error.message}`, "error");
+        showPopup(`Failed to send to recipient ${index + 1}`, "error");
         logToScreen(`Failed to send to ${to}: ${error.message}`, "error");
       }
     }
@@ -377,9 +406,8 @@ async function sendBlessings() {
   }
 
   // EVM chains
-  for (const to of recipients) {
+  for (const [index, to] of recipients.entries()) {
     try {
-      // Validate EVM address format
       if (!to.match(/^0x[a-fA-F0-9]{40}$/)) {
         showPopup(`Invalid ${chain} address: ${to}`, "error");
         continue;
@@ -388,22 +416,37 @@ async function sendBlessings() {
       const tx = await signer.sendTransaction({ 
         to: to, 
         value: valuePer.toString(),
-        gasLimit: 21000 // Standard transfer gas limit
+        gasLimit: 21000
       });
       
-      showPopup(`Transaction sent to ${to.slice(0, 8)}...`, "loading");
+      showPopup(`Transaction sent (${index + 1}/${recipients.length})...`, "loading");
       const receipt = await tx.wait();
       
       const amount = ethers.formatEther(valuePer);
       const symbol = chain === "polygon" ? "MATIC" : "ETH";
-      showPopup(`Sent ${amount} ${symbol} to ${to.slice(0, 8)}...`, "success");
+      showPopup(`✓ Sent ${amount} ${symbol} (${index + 1}/${recipients.length})`, "success");
       logToScreen(`Sent to ${to}: ${amount} ${symbol} (TX: ${tx.hash})`, "success");
-      await sleep(2000); // Wait between transactions
+      await sleep(2000);
     } catch (error) {
-      showPopup(`Failed to send to ${to.slice(0, 8)}...: ${error.message}`, "error");
+      showPopup(`Failed to send to recipient ${index + 1}`, "error");
       logToScreen(`Failed to send to ${to}: ${error.message}`, "error");
     }
   }
+}
+
+function debugConnection() {
+  const debugInfo = document.getElementById("debugInfo");
+  const info = `
+    URL: ${window.location.href}
+    User: ${userAddress || "Not connected"}
+    TON UI: ${!!tonUI}
+    Ethereum: ${!!window.ethereum}
+    Last TX: ${lastTxValueWei.toString()}
+    Chain: ${chainSelect.value}
+  `.split('\n').map(line => line.trim()).filter(line => line);
+  
+  debugInfo.innerHTML = info.join('<br>');
+  logToScreen("Debug information displayed", "info");
 }
 </script>
 </body>
